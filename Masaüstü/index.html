@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+    <meta charset="UTF-8">
+    <title>Sistem Katmanı</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body { background: transparent; overflow: hidden; }
+        /* Animasyonlar */
+        @keyframes slideUp {
+            0% { transform: translateY(100%); opacity: 0; }
+            100% { transform: translateY(0); opacity: 1; }
+        }
+        @keyframes slideDown {
+            0% { transform: translateY(0); opacity: 1; }
+            100% { transform: translateY(100%); opacity: 0; }
+        }
+        /* YENİ: Titreme (Shake) Animasyonu */
+        @keyframes shake {
+            0%, 100% { transform: translateY(0) translateX(0); }
+            10%, 30%, 50%, 70%, 90% { transform: translateY(0) translateX(-6px); }
+            20%, 40%, 60%, 80% { transform: translateY(0) translateX(6px); }
+        }
+
+        .alert-box {
+            position: fixed;
+            bottom: 30px;
+            left: 30px;
+            display: flex;
+            align-items: flex-end;
+            gap: 15px;
+            transition: all 0.5s ease;
+        }
+        .hidden-box {
+            transform: translateY(200px);
+            opacity: 0;
+        }
+        .visible-box {
+            transform: translateY(0);
+            opacity: 1;
+        }
+        /* YENİ: Titreme Sınıfı */
+        .shake-anim {
+            animation: shake 0.8s cubic-bezier(.36,.07,.19,.97) both;
+        }
+    </style>
+</head>
+<body>
+
+    <div id="alertContainer" class="alert-box hidden-box">
+        <!-- Üçgen İkon -->
+        <div class="relative">
+            <div class="absolute -inset-4 bg-red-600/30 rounded-full blur-xl animate-pulse"></div>
+            <div class="bg-red-600 text-white p-4 rounded-full shadow-lg flex items-center justify-center">
+                <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path>
+                    <line x1="12" y1="9" x2="12" y2="13"></line>
+                    <line x1="12" y1="17" x2="12.01" y2="17"></line>
+                </svg>
+            </div>
+        </div>
+
+        <!-- Mesaj -->
+        <div class="bg-black/90 border-l-4 border-red-500 text-white p-4 pr-8 rounded-r-lg shadow-2xl backdrop-blur-md max-w-sm mb-2">
+            <h3 class="text-red-500 font-bold text-sm tracking-widest uppercase mb-1">DİKKAT</h3>
+            <p id="alertMessage" class="text-lg font-medium leading-tight">Lütfen bilgisayarı terk edin.</p>
+            <p id="debugInfo" class="text-[10px] text-gray-500 mt-1 opacity-0">Bağlanıyor...</p>
+        </div>
+    </div>
+
+    <!-- Firebase SDK (CDN ile alıyoruz ki build gerekmesin) -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js";
+        import { getFirestore, doc, onSnapshot } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-auth.js";
+
+        // --- YAPILANDIRMA MANTIĞI ---
+        let firebaseConfig;
+        let appId = "default-app-id";
+
+        // 1. Ortam Kontrolü (Canvas Önizleme vs. Yerel Çalışma)
+        if (typeof __firebase_config !== 'undefined') {
+            // Canvas içindeysek otomatik al
+            firebaseConfig = JSON.parse(__firebase_config);
+            if (typeof __app_id !== 'undefined') appId = __app_id;
+        } else {
+            // Bilgisayarında Electron ile çalıştırırken burayı kendi bilgilerinle doldurmalısın
+            firebaseConfig = {
+                apiKey: "SENIN_API_KEYIN",
+                authDomain: "SENIN_PROJECT_ID.firebaseapp.com",
+                projectId: "SENIN_PROJECT_ID",
+                storageBucket: "SENIN_PROJECT_ID.appspot.com",
+                messagingSenderId: "...",
+                appId: "..."
+            };
+        }
+
+        const app = initializeApp(firebaseConfig);
+        const db = getFirestore(app);
+        const auth = getAuth(app);
+        
+        const container = document.getElementById('alertContainer');
+        const messageEl = document.getElementById('alertMessage');
+        const debugInfo = document.getElementById('debugInfo');
+
+        // Mouse olaylarını Electron'a iletmek için (Eğer tıklama gerekirse)
+        // const { ipcRenderer } = require('electron');
+
+        // --- AUTH VE DİNLEME MANTIĞI ---
+        
+        // Önceki durumu takip etmek için değişken (Titremeyi sadece yeni açıldığında yapmak için)
+        let lastActiveState = false;
+
+        async function initApp() {
+            try {
+                // Önce giriş yap
+                if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                    await signInWithCustomToken(auth, __initial_auth_token);
+                } else {
+                    await signInAnonymously(auth);
+                }
+                
+                console.log("Masaüstü: Giriş Başarılı");
+                startListening();
+                
+            } catch (error) {
+                console.error("Masaüstü: Giriş Hatası", error);
+                messageEl.innerText = "Bağlantı Hatası (Auth)";
+                container.classList.remove('hidden-box');
+                container.classList.add('visible-box');
+            }
+        }
+
+        function startListening() {
+            // Veritabanı yolun: artifacts > default-app-id > public > data > alerts > status
+            const docRef = doc(db, "artifacts", appId, "public", "data", "alerts", "status");
+
+            onSnapshot(docRef, (doc) => {
+                debugInfo.innerText = "Bağlı: " + new Date().toLocaleTimeString();
+                
+                if (doc.exists()) {
+                    const data = doc.data();
+                    
+                    if (data.active) {
+                        // Eğer zaten açıksa tekrar açma efektini yapma (titreme hariç)
+                        container.classList.remove('hidden-box');
+                        container.classList.add('visible-box');
+                        messageEl.innerText = data.message || "Acil Durum!";
+                        
+                        // YENİ: Sadece kapalıyken açıldıysa titret (lastActiveState false -> true)
+                        if (!lastActiveState) {
+                            container.classList.add('shake-anim');
+                            // Animasyon 0.8s sürüyor, 1 saniye sonra sınıfı temizle
+                            setTimeout(() => {
+                                container.classList.remove('shake-anim');
+                            }, 1000);
+                        }
+                        
+                        // Alarm görünürken mouse etkileşimini açabiliriz
+                        // if (typeof ipcRenderer !== 'undefined') ipcRenderer.send('set-ignore-mouse-events', false)
+                    } else {
+                        container.classList.remove('visible-box');
+                        container.classList.add('hidden-box');
+                        container.classList.remove('shake-anim'); // Kapatılınca titremeyi durdur
+                    }
+                    
+                    // Son durumu kaydet
+                    lastActiveState = data.active;
+                }
+            }, (error) => {
+                console.error("Masaüstü: Veri okuma hatası", error);
+                // İzin hatası olursa kullanıcıyı uyar (sadece test için, normalde gizli kalmalı)
+                if (error.code === 'permission-denied') {
+                    // Sessiz kal veya logla
+                }
+            });
+        }
+
+        // Uygulamayı başlat
+        initApp();
+
+    </script>
+</body>
+</html>
